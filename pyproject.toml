@@ -1,0 +1,77 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "svrn"
+version = "1.1.0"
+description = "Stochastic Variational Relay Network for cell-cell communication inference in spatial transcriptomics"
+readme = "README.md"
+requires-python = ">=3.9,<3.12"
+license = { file = "LICENSE" }
+authors = [
+    { name = "SVRN Authors" }
+]
+keywords = [
+    "spatial transcriptomics",
+    "cell-cell communication",
+    "graph neural network",
+    "ligand-receptor",
+    "single-cell",
+    "variational inference",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "numpy==1.26.4",
+    "pandas==2.2.2",
+    "scipy==1.13.1",
+    "scikit-learn==1.5.1",
+    "torch==2.3.1",
+    "torch-geometric==2.5.3",
+    "pytorch-lightning==2.3.3",
+    "scanpy==1.10.2",
+    "anndata==0.10.8",
+    "scikit-misc==0.3.1",
+    "networkx==3.3",
+    "matplotlib==3.9.1",
+    "seaborn==0.13.2",
+    "tqdm==4.66.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.2.2",
+    "pytest-cov==5.0.0",
+    "black==24.4.2",
+    "isort==5.13.2",
+    "flake8==7.1.0",
+]
+
+[project.urls]
+Repository = "https://github.com/<org>/svrn"
+Issues = "https://github.com/<org>/svrn/issues"
+
+[project.scripts]
+svrn = "svrn.pipeline:main"
+
+[tool.setuptools.packages.find]
+include = ["svrn*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.isort]
+profile = "black"
+line_length = 100

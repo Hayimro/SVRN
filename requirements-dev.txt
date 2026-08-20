@@ -1,0 +1,14 @@
+-r requirements.txt
+
+# Testing
+pytest==8.2.2
+pytest-cov==5.0.0
+
+# Linting / formatting
+black==24.4.2
+isort==5.13.2
+flake8==7.1.0
+
+# Notebooks (optional, for exploratory analysis)
+jupyterlab==4.2.4
+ipykernel==6.29.5
