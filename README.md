@@ -1,4 +1,3 @@
-# SVRN — Stochastic Variational Relay Network
 
 [![CI](https://github.com/<org>/svrn/actions/workflows/ci.yml/badge.svg)](https://github.com/<org>/svrn/actions/workflows/ci.yml)
 [![Python 3.9–3.11](https://img.shields.io/badge/python-3.9%E2%80%933.11-blue)](pyproject.toml)
