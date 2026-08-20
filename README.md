@@ -18,11 +18,6 @@ cell–cell communication** from spatial transcriptomics data. It combines:
 - a **multi-run, K-fold consensus-inference** procedure that yields
   reproducible per-cell-type influence scores, selection frequencies, and
   ranked communication corridors, with Monte-Carlo uncertainty estimates.
-
-See [`docs/algorithms.md`](docs/algorithms.md) for full pseudocode of the
-training procedure (Algorithm 1) and the consensus-inference procedure
-(Algorithm 2).
-
 ---
 
 ## Installation
@@ -109,32 +104,6 @@ svrn \
 copy-paste starting point, and [`scripts/run_example.sh`](scripts/run_example.sh)
 for the synthetic-data smoke test.
 
-### Key CLI arguments
-
-| Flag | Default | Description |
-|---|---|---|
-| `--data_path` | — | Path to `.h5ad` spatial transcriptomics file (required unless `--run_example`) |
-| `--lr_path` | — | Path to ligand–receptor CSV file (required unless `--run_example`) |
-| `--output_dir` | `svrn_results` | Output directory for checkpoints, tables, and plots |
-| `--epochs` | `100` | Training epochs per model |
-| `--batch_size` | `100` | Mini-batch size |
-| `--lr` | `3e-4` | Learning rate (CLI default; the Python `Config` default is `1.5e-4`) |
-| `--hidden_dim` | `256` | Node encoder hidden dimension (CLI default; the Python `Config` default is `512`) |
-| `--max_hops` | `5` | Relay propagation hops (`S` in Algorithm 1, Eq. 10) |
-| `--k_folds` | `5` | K-fold cross-validation folds (`0`/`1` disables; `25` recommended for publication-grade consensus estimates) |
-| `--n_runs` | `5` | Independent seeded training runs pooled into the consensus (20–25 recommended for ±10% selection-frequency precision) |
-| `--consensus_k` | `2` | Top-K cell types per fold flagged as "selected" |
-| `--mc_samples` | `30` | Monte-Carlo forward passes for uncertainty estimation (the Python `Config` default is `50`) |
-| `--n_neighbors` | `14` | Spatial KNN graph degree (memory control) |
-| `--edge_chunk_size` | `512` | Number of edges processed per LR encoder chunk (memory control) |
-| `--max_edges_per_step` | `4000` | Edge subsampling cap per training step (memory control; `0` = use all) |
-| `--split_path` / `--kfold_split_path` | auto | Reuse previously saved split indices for exact reproducibility across runs |
-| `--run_example` | off | Ignore `--data_path`/`--lr_path` and run the synthetic smoke test |
-
-Run `svrn --help` for the complete list.
-
----
-
 ## Project structure
 
 ```
@@ -160,19 +129,12 @@ svrn/
 ├── scripts/
 │   ├── run_example.sh      # synthetic-data smoke test
 │   └── run_full_pipeline.sh
-├── docs/
-│   ├── algorithms.md       # pseudocode: training + consensus inference
-│   ├── MODEL_AND_CODE_AVAILABILITY.md
-│   ├── DATA_AVAILABILITY.md
-│   ├── REPRODUCIBILITY.md
-│   └── data_provenance_template.csv
+│ 
 ├── data/                   # local drop-zone for inputs (git-ignored)
 ├── requirements.txt        # pinned runtime dependencies
 ├── requirements-dev.txt    # + testing/linting/notebook tools
 ├── environment.yml         # conda equivalent
-├── pyproject.toml          # packaging + console entry point
-├── CITATION.cff
-└── LICENSE
+└── pyproject.toml          # packaging + console entry point
 ```
 
 All public names are re-exported from `svrn/__init__.py`, so existing code
@@ -217,42 +179,6 @@ splitting is seeded but not bit-reproducible across separate process launches
 handful of borderline cells), always reuse the saved `split_indices.npz` /
 `kfold_split_indices.npz` (via `--split_path`/`--kfold_split_path`) rather
 than recomputing splits when exact cross-run reproducibility matters.
-
----
-
-## Nature Communications reproducibility and availability
-
-SVRN is custom computational code central to the reported method. The repository therefore includes installation instructions, an executable synthetic-data example, automated tests, algorithm documentation, reproducibility guidance, and data/model provenance templates. This structure follows Nature Communications guidance that custom code central to the conclusions should be available to editors and reviewers and that documentation should include installation/running instructions, tests and examples.
-
-See:
-
-- [`docs/MODEL_AND_CODE_AVAILABILITY.md`](docs/MODEL_AND_CODE_AVAILABILITY.md) for code/model release and archival requirements;
-- [`docs/DATA_AVAILABILITY.md`](docs/DATA_AVAILABILITY.md) for dataset provenance and manuscript Data availability wording;
-- [`docs/REPRODUCIBILITY.md`](docs/REPRODUCIBILITY.md) for environment, preprocessing, split, validation and release requirements.
-
-The final manuscript should cite the exact archived software release (preferably with a DOI) and state any restrictions on code, data, or trained model access.
-
-### Manuscript Code availability statement template
-
-> **Code availability**  The source code for SVRN is publicly available at `https://github.com/<org>/svrn` and the exact version used in this study is archived at [DOI]. The repository contains the model implementation, preprocessing and inference pipeline, training configuration, tests and reproducible synthetic example. Any restrictions on access to the study-specific data or trained model checkpoints are described separately in the Data availability statement.
-
-## Citation
-
-If you use SVRN in your research, please cite it (see
-[`CITATION.cff`](CITATION.cff)):
-
-```bibtex
-@software{svrn2026,
-  title   = {SVRN: Stochastic Variational Relay Network for Cell-Cell
-             Communication Inference in Spatial Transcriptomics},
-  author  = {{SVRN Authors}},
-  year    = {2026},
-  url     = {https://github.com/<org>/svrn},
-  version = {1.0.0}
-}
-```
-
-## License
 
 MIT — see [`LICENSE`](LICENSE). Update the copyright holder name in
 `LICENSE`, `CITATION.cff`, and `pyproject.toml` before publishing.
