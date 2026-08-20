@@ -10,11 +10,6 @@ Monte-Carlo uncertainty -> K-fold consensus -> plot workflow, plus the
 ``example_usage()`` synthetic-data smoke test and the ``main()`` CLI
 entry point.
 
-This module used to contain the entire SVRN codebase; it has been
-split into ``utils.py`` (config/metrics/validation/consensus),
-``model.py`` (network architecture), ``data.py`` (preprocessing), and
-``visualization.py`` (plotting), with this file left as the thin
-orchestration layer that imports from all four.
 """
 
 import os
@@ -230,8 +225,6 @@ class SVRNPipeline:
         print(f"  Consensus K         : {self.cfg.CONSENSUS_K}")
         print(f"{'='*70}")
 
-        # Deterministic run seeds: derived from base SEED via a fixed hash sequence
-        # so adding more runs doesn't shift earlier seeds (unlike SEED + run_i).
         _RUN_HASH = 0x9E3779B97F4A7C15   # Fibonacci hashing constant (64-bit)
         run_seeds = [
             int(self.cfg.SEED) ^ ((_RUN_HASH * (r + 1)) & 0xFFFFFFFF)
@@ -295,9 +288,6 @@ class SVRNPipeline:
                 model_seed = run_seed ^ (fold_i * 0x6B43A9B5 & 0xFFFFFFFF)
                 set_seed(model_seed)
 
-                # DataLoaders are constructed AFTER model_seed is set so the
-                # shuffle generator and worker seeds are fully deterministic and
-                # tied to this specific run×fold combination.
                 _dl_gen = torch.Generator()
                 _dl_gen.manual_seed(model_seed)
                 def _worker_init_kf(worker_id: int, _seed: int = model_seed) -> None:
@@ -627,15 +617,7 @@ class SVRNPipeline:
                   f"{consensus_corridor_path}")
 
             # ── 4c: Consensus RELAY table ───────────────────────────────
-            # consensus_corridor_summary.csv above only keeps aggregate stats
-            # per corridor_id (mean influence, hops, length) — it drops the
-            # actual relay cells. This explodes each fold's
-            # relay_cell_ids_global (global cell indices, via the
-            # global_cell_idx mapping threaded through SVRNVisualizer) into
-            # one row per (corridor_id, relay cell), then counts how often
-            # each global cell shows up as a relay for that corridor across
-            # folds/runs — i.e. which intermediate cells consistently form
-            # the "relay backbone" of each communication corridor.
+           
             if "relay_cell_ids_global" in all_folds_corridor_df.columns:
                 relay_records = []
                 all_ct = full_data["cell_types"]
@@ -935,66 +917,8 @@ class SVRNPipeline:
         val_epochs = getattr(self.model, "val_epochs", [])
         visualizer.run_all(train_losses, val_losses, val_epochs)
 
-
-
 # =====================================================================
-# 11. Dummy example
-# =====================================================================
-def example_usage() -> None:
-    print("\n" + "=" * 70)
-    print("RUNNING DUMMY SVRN EXAMPLE")
-    print("=" * 70)
-
-    adata_path = "dummy_adata.h5ad"
-    lr_path = "dummy_lr_pairs.csv"
-
-    n_cells = 300
-    n_genes = 80
-    n_lr_pairs = 10
-
-    # Seed before generating dummy data so the example is fully reproducible.
-    set_seed(42)
-    X = np.random.poisson(lam=2.0, size=(n_cells, n_genes)).astype(np.float32)
-    adata = AnnData(X)
-    adata.var_names = [f"gene_{i}" for i in range(n_genes)]
-    adata.obs_names = [f"cell_{i}" for i in range(n_cells)]
-    adata.obs["cell_type"] = np.random.choice(["T cell", "B cell", "Macrophage", "Fibroblast"], n_cells)
-    adata.obsm["spatial"] = np.random.rand(n_cells, 2).astype(np.float32) * 100.0
-    adata.write(adata_path)
-
-    lr_df = pd.DataFrame(
-        {
-            "Ligand_ENSEMBL": [f"gene_{i}" for i in range(n_lr_pairs)],
-            "Receptor_ENSEMBL": [f"gene_{i + n_lr_pairs}" for i in range(n_lr_pairs)],
-        }
-    )
-    lr_df.to_csv(lr_path, index=False)
-
-    cfg = Config(
-        DATA_PATH=adata_path,
-        LR_PATH=lr_path,
-        OUTPUT_DIR="svrn_dummy_results",
-        EPOCHS=3,
-        BATCH_SIZE=1,
-        LR=1e-5,
-        HIDDEN_DIM=64,
-        MULTI_HOP_STEPS=3,
-        DROPOUT=0.1,
-        SEED=42,
-        N_HVGS=50,
-        MC_SAMPLES=5,   # fewer samples for the quick dummy run
-    )
-
-    pipeline = SVRNPipeline(cfg)
-    pipeline.run()
-
-    print("\n" + "=" * 70)
-    print("DUMMY EXAMPLE COMPLETE")
-    print("=" * 70)
-
-
-# =====================================================================
-# 12. Main
+#  Main
 # =====================================================================
 def main() -> None:
     parser = argparse.ArgumentParser(description="Stable SVRN for spatial transcriptomics.")
