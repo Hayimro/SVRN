@@ -8,9 +8,6 @@ dataclass, evaluation metrics (:class:`UnifiedMetrics`), the post-hoc
 model validation suite (:class:`SVRNValidator`), and multi-run/K-fold
 consensus aggregation (:class:`ConsensusInfluence`).
 
-Split out of the original monolithic ``pipeline.py`` so that config,
-metrics, and validation logic can be imported (and unit-tested) without
-pulling in the full data-preprocessing or plotting stacks.
 """
 
 from __future__ import annotations
@@ -73,14 +70,7 @@ def set_seed(seed: int = 42) -> None:
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    # Force deterministic CUDA kernels.
-    # CUBLAS_WORKSPACE_CONFIG=:4096:8 must already be in env (set at file top).
-    # warn_only=False: a previous warn_only=True here silently let any op
-    # without a deterministic kernel fall back to nondeterministic execution
-    # (only printing a warning), which is the actual source of run-to-run
-    # irreproducibility on GPU even with every RNG seed fixed. Failing loudly
-    # surfaces the offending op so it can be swapped for a deterministic
-    # equivalent instead of silently drifting between runs.
+   
     torch.use_deterministic_algorithms(True, warn_only=False)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
@@ -88,9 +78,6 @@ def set_seed(seed: int = 42) -> None:
     os.environ["PYTHONHASHSEED"] = str(seed)
     pl.seed_everything(seed, workers=True)
 
-
-# Apply seed immediately at import time so weight inits and data ops are covered
-# even if the caller never calls set_seed() explicitly.
 _DEFAULT_SEED = 42
 set_seed(_DEFAULT_SEED)
 
@@ -151,14 +138,8 @@ class Config:
     # Species for mygene pathway annotation in C9 plot ("mouse" or "human")
     SPECIES: str = "mouse"
 
-    # K-fold cross-validation (set to 0 or 1 to disable; 25 = recommended for
-    # stable consensus influence estimation across tissue regions)
     K_FOLDS: int = 5
 
-    # Independent training runs with different model-init seeds.
-    # Consensus is pooled across all n_runs × n_folds models.
-    # Literature recommendation: 20–25 runs for ±10% selection-frequency precision.
-    # Each run uses a deterministic seed derived from SEED so results are reproducible.
     N_RUNS: int = 5
 
     # Top-K cell types counted as "selected" when computing selection frequency
@@ -168,26 +149,11 @@ class Config:
     # Path to a saved split (.npz).  Empty string = compute & save a new one.
     SPLIT_PATH: str = ""
 
-    # Path to saved k-fold split indices (.npz). Empty string = compute & save
-    # a new one at <OUTPUT_DIR>/kfold_split_indices.npz. See
-    # Preprocessor.get_kfold_splits for why this caching exists: the spatial
-    # KMeans + StratifiedKFold partitioning is seeded but not bit-reproducible
-    # across separate process runs (multi-threaded float reduction order can
-    # flip a handful of borderline cells between clusters each time), so the
-    # only hard guarantee of identical folds across runs is reusing saved
-    # indices instead of recomputing them.
     KFOLD_SPLIT_PATH: str = ""
 
     def __post_init__(self):
         self.DEVICE = DEVICE.type
 
-        # ── Path normalization ────────────────────────────────────────
-        # Resolve "~" and relative paths against the *caller's* cwd up
-        # front, once. Without this, the same relative path can silently
-        # resolve to a different file depending on where the script is
-        # launched from (e.g. via a scheduler, a notebook, or a different
-        # shell), and downstream code that compares/derives paths from
-        # OUTPUT_DIR would otherwise mix relative and absolute forms.
         def _normalize(path: str) -> str:
             return os.path.abspath(os.path.expanduser(path)) if path else path
 
@@ -205,10 +171,6 @@ class Config:
                 f"Check that the parent directory exists and is writable."
             ) from exc
 
-        # ── Fail fast on required inputs ──────────────────────────────
-        # Catching a missing/unreadable file here — before scanpy/pandas
-        # touch it several pipeline stages later — turns a confusing
-        # mid-pipeline traceback into a single actionable error.
         for path, label in ((self.DATA_PATH, "DATA_PATH/--data_path"),
                              (self.LR_PATH, "LR_PATH/--lr_path")):
             if not path:
@@ -240,7 +202,7 @@ class Config:
             json.dump(d, f, indent=2)
 
 # =====================================================================
-# 1. Hill Interaction
+#  Hill Interaction
 # =====================================================================
 
 class UnifiedMetrics:
@@ -294,17 +256,6 @@ class UnifiedMetrics:
             metrics["js_specificity"]  = np.nan
 
         try:
-            # R² on rank-transformed scores rather than y_proc (winsorised +
-            # min-max).  Winsorising clips the top/bottom 2% per fold, and
-            # since the clipped cells are disproportionately the same
-            # high-influence cell type, this shrinks SS_tot's between-group
-            # component differently fold-to-fold, inflating R²'s cross-fold
-            # CV well beyond the other metrics (which only need scale-
-            # invariance, not unbiased group separation).  Rank-transform is
-            # monotonic and bounded, giving the same outlier robustness as
-            # winsorising without distorting the relative between- vs
-            # within-cell-type variance that R² actually measures — the
-            # same rationale already used for morans_i / gearys_c above.
             y_rank = self._rank_transform(y_proc)
             metrics["r2_cell_type"] = self.r2_cell_type(
                 y_rank,
@@ -396,19 +347,6 @@ class UnifiedMetrics:
         y: np.ndarray,
         adj_matrix: csr_matrix,
     ) -> float:
-        """Moran's I on preprocessed, rank-transformed scores.
-
-        Receives the winsorised [0,1] scores from _preprocess() (called
-        by compute_all before any metric), then applies _rank_transform()
-        to get fractional ranks and _row_normalize() to get a density-
-        invariant weight matrix.
-
-        Formula:
-
-            I = z_r' W_rn z_r / (z_r' z_r)
-
-        where z_r = rank(y) − mean(rank(y)).  Bounded in [−1, 1].
-        """
         y = np.asarray(y, dtype=np.float64).flatten()
         W = adj_matrix.tocsr() if issparse(adj_matrix) else csr_matrix(adj_matrix)
         n = len(y)
@@ -427,31 +365,7 @@ class UnifiedMetrics:
         y: np.ndarray,
         adj_matrix: csr_matrix,
     ) -> float:
-        """Geary's C: C = (n−1)/n · (1 − I).
-
-        With row-normalised W_rn the classical Geary C reduces to:
-
-            C = (n−1)/(2n) · z_r' (I − W_rn) z_r / (z_r' z_r)
-              = (n−1)/n · (1 − I) / 2          ... (*)
-
-        The factor of ½ comes from the standard 2·W_sum denominator.
-        With the conventional definition that drops the ½ (Cliff & Ord
-        1981, used in most spatial-stats packages):
-
-            C = (n−1)/n · (1 − I)
-
-        which is the formula requested.  This is implemented directly:
-        compute I via morans_i() on the same preprocessed y, then scale.
-
-        std(C) == (n−1)/n · std(I) ≈ std(I) for realistic n, so Geary C
-        inherits Moran's low absolute noise floor.  The remaining CV
-        difference is the mathematical consequence of mean(C) < mean(I):
-
-            CV(C) = CV(I) · mean(I) / mean(C)
-
-        Bounded in [0, 2·(n−1)/n] ≈ [0, 2].
-        Values near 0 = strong positive autocorrelation; ≈1 = random.
-        """
+       
         y = np.asarray(y, dtype=np.float64).flatten()
         W = adj_matrix.tocsr() if issparse(adj_matrix) else csr_matrix(adj_matrix)
         n = len(y)
@@ -465,205 +379,6 @@ class UnifiedMetrics:
             return 1.0
         I = float(z @ (W_rn @ z)) / denom
         return float((n - 1) / n * (1.0 - I))
-
-    @staticmethod
-    def gini_coefficient(
-        x: np.ndarray,
-        lo_pct: float = 10.0,
-        hi_pct: float = 90.0,
-    ) -> float:
-        """Gini coefficient of influence-score concentration (winsorised).
-
-        **Why winsorise before computing Gini**
-
-        The classical Gini formula sorts raw values and weights each by its
-        rank position.  With small fold sizes (e.g. a 15%-test split divided
-        into 3 CV folds can leave only ~20-40 cells per fold), a single rare
-        extreme-influence cell that happens to land in one fold but not
-        another swings both `sum(x)` (the denominator) and the rank-weighted
-        numerator disproportionately.  Diagnosis on synthetic data with a
-        sparse heavy right tail (3 outlier cells in 600, ~15-40x median)
-        showed Gini CV of 15-20% with the raw formula but only 9-10% after
-        clipping the [10th, 90th] percentile band before computing — the
-        outlier cells still pull the score up (the *shape* signal survives)
-        but no longer dominate it via their absolute magnitude.
-
-        **Formula** (unchanged once values are clipped)
-
-            x <- clip(x, P10, P90)
-            x <- x - min(x)                       (non-negativity, scale shift)
-            G = sum_i (2*i - n - 1) * x_(i) / (n * sum(x))
-
-        where x_(i) are the clipped values sorted ascending and i = 1..n.
-        G = 0 means perfectly equal influence; G -> 1 means concentrated in
-        very few cells.  The [10, 90] band is a default; pass tighter or
-        looser percentiles depending on how heavy-tailed influence scores
-        are expected to be in a given dataset.
-        """
-        x = np.asarray(x, dtype=np.float64).flatten()
-        if x.size == 0 or np.allclose(x, 0):
-            return 0.0
-        lo, hi = np.percentile(x, [lo_pct, hi_pct])
-        if hi > lo:
-            x = np.clip(x, lo, hi)
-        x = x - np.min(x)                    # ensure non-negativity
-        x = np.sort(x)
-        n = len(x)
-        index = np.arange(1, n + 1)
-        return float(np.sum((2 * index - n - 1) * x) / (n * np.sum(x) + 1e-12))
-
-    @staticmethod
-    def shannon_entropy(
-        scores: np.ndarray,
-        n_bins: int = 20,
-    ) -> float:
-        """Histogram-based Shannon entropy of the influence-score distribution.
-
-        This measures how *concentrated vs. spread-out* influence is
-        across cells: scores are binned into `n_bins` equal-width bins
-        spanning [min(scores), max(scores)], a probability mass p_b is
-        formed from the fraction of cells falling in each bin, and the
-        Shannon entropy H = -sum_b p_b * log(p_b) is computed and then
-        normalized by log(n_bins) so the result lies in [0, 1].
-
-        Interpretation:
-          - 1.0  -> cells are spread roughly uniformly across the full
-                    range of influence values (high diversity / low
-                    concentration).
-          - 0.0  -> nearly all cells fall in a single bin (influence is
-                    highly concentrated / homogeneous across cells).
-
-        This is NOT a measure of the information content of the raw
-        influence values themselves -- it is a concentration/diversity
-        measure over the *distribution* of influence scores.
-        """
-        scores = np.asarray(scores, dtype=np.float64).flatten()
-
-        if scores.size == 0:
-            return 0.0
-
-        finite = scores[np.isfinite(scores)]
-        if finite.size == 0:
-            return 0.0
-
-        lo, hi = finite.min(), finite.max()
-        if hi - lo < 1e-12:
-            # All values identical -> single bin -> zero entropy (no diversity)
-            return 0.0
-
-        counts, _ = np.histogram(finite, bins=n_bins, range=(lo, hi))
-        total = counts.sum()
-        if total <= 0:
-            return 0.0
-
-        p = counts.astype(np.float64) / total
-        p = p[p > 0]
-
-        h = float(-np.sum(p * np.log(p)))
-        h_max = np.log(n_bins)
-        return float(h / h_max) if h_max > 0 else 0.0
-
-    @staticmethod
-    def pathway_specificity(
-        influence_scores: np.ndarray,
-        cell_types: np.ndarray,
-        lo_pct: float = 10.0,
-        hi_pct: float = 90.0,
-    ) -> Dict[str, float]:
-        """Cell-type specificity of average influence (winsorised).
-
-        **Why winsorise before grouping by cell type**
-
-        Both indices below are computed from *per-cell-type mean influence*.
-        With small folds, a rare extreme-influence cell inflates the mean of
-        whichever cell type it happens to belong to, and that one type's mean
-        then dominates max(means) (tau) or the q distribution (JS) — a single
-        cell can flip which type looks "most specific" from fold to fold.
-        Clipping influence scores to the [10th, 90th] percentile band *before*
-        computing per-type means caps this leverage while leaving the
-        relative ordering of cell-type means intact.
-
-        **Why Jensen-Shannon DISTANCE instead of DIVERGENCE for js_specificity**
-
-        JS divergence behaves quadratically near zero: for q close to the
-        uniform distribution u (low specificity, the common case), JS(q,u) is
-        approximately a chi-square-like distance ~ sum (q_i-u)^2 / u.  A
-        quadratic-near-zero quantity always has inflated *relative* noise —
-        the same precision-limit pattern that drove Geary C's residual CV.
-        Taking the square root (the Jensen-Shannon DISTANCE, a well-known
-        proper metric — JS divergence is not a metric but its square root is)
-        linearises this near-zero behaviour.  Empirically this cut js CV from
-        ~25% to ~12-13% on synthetic folds with realistic small-n cell-type
-        representation, with no change to ordering or interpretation: 0 means
-        no cell-type preference, 1 means a single type captures all influence.
-
-        Tau specificity (Yanai et al. 2005, "tissue specificity index"):
-            tau = sum_i (1 - x_hat_i) / (N - 1),  x_hat_i = x_i / max(x)
-        where x_i are non-negative per-cell-type means (after winsorising).
-        tau in [0, 1]: 0 = influence equal across types (broad); 1 =
-        influence concentrated in essentially one cell type (highly specific).
-        """
-        scores = np.asarray(influence_scores, dtype=np.float64).flatten()
-
-        # Winsorise per-cell scores before grouping, so a single extreme
-        # cell cannot dominate its type's mean.
-        if scores.size > 0:
-            lo, hi = np.percentile(scores, [lo_pct, hi_pct])
-            if hi > lo:
-                scores = np.clip(scores, lo, hi)
-
-        df = pd.DataFrame({
-            "score": scores,
-            "type": np.asarray(cell_types),
-        })
-        means = df.groupby("type")["score"].mean().values.astype(np.float64)
-        n_types = len(means)
-
-        if n_types < 2:
-            return {"tau_specificity": 0.0, "js_specificity": 0.0}
-
-        # Shift to non-negative (specificity indices below assume x_i >= 0)
-        means_nonneg = means - np.min(means)
-        if means_nonneg.max() <= 1e-12:
-            return {"tau_specificity": 0.0, "js_specificity": 0.0}
-
-        # ── Tau specificity ────────────────────────────────────────────
-        x_hat = means_nonneg / means_nonneg.max()
-        tau = float(np.sum(1.0 - x_hat) / (n_types - 1))
-
-        # ── Jensen-Shannon specificity (distance, not divergence) ───────
-        q = means_nonneg / means_nonneg.sum()
-        u = np.full(n_types, 1.0 / n_types)
-        m = 0.5 * (q + u)
-
-        def _kl(p, base):
-            mask = p > 0
-            return float(np.sum(p[mask] * np.log(p[mask] / base[mask])))
-
-        js_div = max(0.5 * _kl(q, m) + 0.5 * _kl(u, m), 0.0)
-        js_spec = float(np.clip(np.sqrt(js_div / np.log(2)), 0.0, 1.0))
-
-        return {"tau_specificity": tau, "js_specificity": js_spec}
-
-    @staticmethod
-    def r2_cell_type(
-        influence_scores: np.ndarray,
-        cell_types: np.ndarray,
-    ) -> float:
-        
-        scores = np.asarray(influence_scores, dtype=np.float64).flatten()
-        labels = np.asarray(cell_types).flatten()
-
-        unique_cts = np.unique(labels)
-        if len(unique_cts) < 2:
-            return float("nan")
-
-        # Build per-cell predictions from cell-type means
-        type_means = {ct: float(np.mean(scores[labels == ct]))
-                      for ct in unique_cts}
-        y_pred = np.array([type_means[ct] for ct in labels], dtype=np.float64)
-
-        return float(r2_score(scores, y_pred))
 
     @staticmethod
     def de_effect_size(
@@ -709,44 +424,7 @@ class UnifiedMetrics:
         k_smooth: int = 6,
         min_class_size: int = 3,
     ) -> float:
-        """Balanced Accuracy — spatially-smoothed, AUROC-based, macro-averaged (OvR).
-
-        Literature basis
-        ----------------
-        * LARIS (Ferrara et al., bioRxiv 2025): spatial kNN diffusion of
-          expression scores before cell-type comparison reduces noise and
-          improves sensitivity; adopted here to smooth influence scores.
-        * DeepTalk (Xu et al., Nat Commun 2024): subgraph-level GAT
-          cell-type discrimination uses neighbourhood-aggregated embeddings,
-          not raw single-cell scores.
-        * Focus (Wen et al., PMC 2025): neighbourhood context improves
-          cell-type annotation accuracy by up to 27.8% (F1 +51.9%).
-        * BASS / RECCIPE (Li & Zhou 2022; Ma et al. 2024): logistic-regression
-          OvR AUROC is the recommended discriminability measure for continuous
-          scores across cell types — threshold-free and imbalance-robust.
-
-        Notes on this implementation
-        -----------------------------
-        * Macro-averaged, NOT size-weighted: every cell type contributes
-          equally to the final score regardless of how many cells it has.
-          "Balanced" accuracy exists specifically so a handful of rare cell
-          types aren't drowned out by abundant ones — averaging with weights
-          proportional to class size (as an earlier version of this function
-          did via sqrt(n_pos)) reintroduces exactly the imbalance bias the
-          metric is meant to correct for, and lets the dominant cell type
-          drive the reported number.
-        * No artificial floor on the fallback threshold sweep: a cell type
-          whose best achievable balanced accuracy across thresholds is below
-          0.5 is genuinely anti-informative (or noisy) for that class, and
-          clamping it to 0.5 silently hides that signal and inflates the
-          macro average.
-        * `min_class_size` (default 3) excludes cell types with too few
-          cells for a stable per-class AUROC estimate. This matters more
-          once averaging is unweighted: under macro-averaging a class with
-          1-2 cells now counts exactly as much as a class with thousands,
-          so a single mislabeled/outlier cell could otherwise swing the
-          reported metric disproportionately.
-        """
+       
         from sklearn.metrics import balanced_accuracy_score, roc_auc_score
         from scipy.stats import rankdata
 
@@ -794,9 +472,7 @@ class UnifiedMetrics:
             # Primary: threshold-free AUROC (BASS / RECCIPE)
             try:
                 auc_val = float(roc_auc_score(true_bin, normed))
-                # Direction-agnostic: a class whose scores are consistently
-                # low is exactly as discriminable as one whose scores are
-                # consistently high (the sign is an artifact of label coding).
+             
                 per_class_scores.append(max(auc_val, 1.0 - auc_val))
                 continue
             except Exception:
@@ -828,7 +504,7 @@ class UnifiedMetrics:
         return float(np.mean(per_class_scores))
 
 # =====================================================================
-# 8. Visualizer
+# Visualizer
 # =====================================================================
 
 class SVRNValidator:
@@ -1054,14 +730,6 @@ class SVRNValidator:
         print(f"         AUPRC >> positive_rate indicates genuine LR-guided spatial signal.")
         print(f"         Balanced_Accuracy_Influence: niche-stratified multi-threshold BA-AUC;")
         print(f"           0.50=random, >=0.60=good, >=0.70=strong cell-type structure.")
-        print(f"         Information_Flow_Score: histogram-based normalized mutual")
-        print(f"           information (NMI) between influence and net-sender")
-        print(f"           LR asymmetry (COMMOT-style sender/receiver decomposition),")
-        print(f"           signed by the direction of their Spearman correlation.")
-        print(f"           0.50=no detectable directional flow,")
-        print(f"           >0.50=high-influence cells are net SENDERS,")
-        print(f"           <0.50=high-influence cells are net RECEIVERS;")
-        print(f"           magnitude away from 0.50 reflects NMI strength in [0,0.5].")
         print(f"         Spearman_rho_LR: count-weighted macro-avg Spearman rho (pred vs L*R expression);")
         print(f"           >0.30=meaningful rank agreement, complements AUROC/AUPRC.")
         print(f"         F1_LR: count-weighted macro-avg F1 at data-driven threshold (top-k predictions")
@@ -1112,140 +780,7 @@ class SVRNValidator:
             return 0.0
         return float(np.clip(mi / denom, 0.0, 1.0))
 
-    @classmethod
-    def _information_flow_score(
-        cls,
-        scores: np.ndarray,
-        edge_index: np.ndarray,
-        edge_weights: Optional[np.ndarray] = None,
-        raw_lr: Optional[np.ndarray] = None,   # (E, N_LR) L[src]*R[dst]
-    ) -> float:
-        """Directional Information Flow Score (renamed from Transfer Entropy Proxy).
-
-        Combines:
-          (1) DIRECTION -- sign of the Spearman correlation between a
-              cell's influence score and its net-sender LR asymmetry
-              (COMMOT-style sender/receiver decomposition). Positive ->
-              high-influence cells tend to be net senders; negative ->
-              net receivers.
-          (2) MAGNITUDE -- histogram-based normalized mutual information
-              (NMI) between influence and net-sender asymmetry, in [0,1].
-              This is a genuine information-theoretic dependency measure
-              (not just a monotonic-correlation proxy), consistent with
-              the histogram-based approach used for influence_entropy.
-
-        Final score = 0.5 + sign(rho) * 0.5 * NMI, clipped to [0, 1]:
-          - 0.50            -> no detectable directional information flow
-          - close to 1.0    -> strong sender-side information flow
-          - close to 0.0    -> strong receiver-side information flow
-
-        Literature
-        ----------
-        * Schreiber (2000): TE as asymmetric flow measure.
-        * COMMOT (Cang et al., Nat Methods 2023): directed LR communication
-          using sender/receiver decomposition — motivates the
-          sender_score / receiver_score split used in the primary path.
-        * TENDE (Galeano-Munoz et al., AISTATS 2026): score-based TE.
-        """
-        from scipy.stats import spearmanr
-
-        src_arr, dst_arr = edge_index[0], edge_index[1]
-        n_cells = len(scores)
-        max_idx = n_cells - 1
-        valid   = (src_arr <= max_idx) & (dst_arr <= max_idx)
-        src_v, dst_v = src_arr[valid], dst_arr[valid]
-        n_edges = len(src_v)
-        if n_edges < 10:
-            return 0.5
-
-        def _directional_score(sc: np.ndarray, net: np.ndarray) -> Optional[float]:
-            """Combine direction (Spearman sign) with NMI magnitude."""
-            if sc.std() <= 1e-8 or net.std() <= 1e-8:
-                return None
-            rho, _ = spearmanr(sc, net)
-            if np.isnan(rho):
-                return None
-            nmi = cls._histogram_nmi(sc, net, n_bins=10)
-            sign = np.sign(rho) if abs(rho) > 1e-8 else 0.0
-            return float(np.clip(0.5 + sign * 0.5 * nmi, 0.0, 1.0))
-
-        # ── Primary: raw L*R directional field (COMMOT-style) ─────────────
-        if raw_lr is not None and len(raw_lr) == len(src_arr):
-            try:
-                lr_v = raw_lr[valid]                     # (n_edges, N_LR)
-                lr_sum = lr_v.sum(axis=1)                # scalar per edge
-
-                sender_score   = np.zeros(n_cells, dtype=np.float64)
-                receiver_score = np.zeros(n_cells, dtype=np.float64)
-                np.add.at(sender_score,   src_v, lr_sum)
-                np.add.at(receiver_score, dst_v, lr_sum)
-
-                total = sender_score + receiver_score
-                has_signal = total > 1e-12
-                if has_signal.sum() >= 4:
-                    net_sender = np.zeros(n_cells, dtype=np.float64)
-                    net_sender[has_signal] = (
-                        (sender_score[has_signal] - receiver_score[has_signal])
-                        / (total[has_signal] + 1e-12)
-                    )
-
-                    result = _directional_score(scores[has_signal], net_sender[has_signal])
-                    if result is not None:
-                        return result
-            except Exception:
-                pass  # fall through to secondary
-
-        # ── Secondary: per-edge mean LR prob — net flow asymmetry ─────────
-        if edge_weights is not None:
-            w_all = np.asarray(edge_weights, dtype=np.float64)
-            w = w_all[valid] if len(w_all) == len(src_arr) else w_all
-            if len(w) == len(src_v):
-                w = np.clip(w, 0.0, None)
-
-                flow_out = np.zeros(n_cells, dtype=np.float64)
-                flow_in  = np.zeros(n_cells, dtype=np.float64)
-                np.add.at(flow_out, src_v, w)
-                np.add.at(flow_in,  dst_v, w)
-
-                total = flow_out + flow_in
-                has_edges = total > 1e-12
-
-                if has_edges.sum() >= 4:
-                    net_flow = np.zeros(n_cells, dtype=np.float64)
-                    net_flow[has_edges] = (
-                        (flow_out[has_edges] - flow_in[has_edges])
-                        / (total[has_edges] + 1e-12)
-                    )
-
-                    result = _directional_score(scores[has_edges], net_flow[has_edges])
-                    if result is not None:
-                        return result
-
-        # ── Fallback: histogram-based MI directional asymmetry ────────────
-        # Used when edge_probs are unavailable (e.g. UnifiedMetrics path).
-        # Compares MI(score_src, score_dst) vs MI(score_dst, score_src)
-        # using directed edges -- the difference indicates which direction
-        # of the edge carries more shared information.
-        s_src = scores[src_v]
-        s_dst = scores[dst_v]
-
-        max_edges = 2000
-        if n_edges > max_edges:
-            idx_sub = np.random.choice(n_edges, max_edges, replace=False)
-            s_src_k, s_dst_k = s_src[idx_sub], s_dst[idx_sub]
-        else:
-            s_src_k, s_dst_k = s_src, s_dst
-
-        nmi_fwd = cls._histogram_nmi(s_src_k, s_dst_k, n_bins=10)
-        if nmi_fwd < 1e-10:
-            return 0.5
-
-        # Direction: does the source-side distribution carry more of the
-        # "sending" signal than the destination side? Use the sign of the
-        # difference in means as a simple directionality proxy.
-        sign = np.sign(s_src_k.mean() - s_dst_k.mean())
-        return float(np.clip(0.5 + sign * 0.5 * nmi_fwd, 0.0, 1.0))
-
+  
     @staticmethod
     def _path_robustness(scores: np.ndarray, edge_index: np.ndarray) -> float:
         E = edge_index.shape[1]
@@ -1485,7 +1020,6 @@ class SVRNValidator:
         kl       = _safe("KL_Divergence")
         ifs      = _safe("Information_Flow_Score")
         pr       = _safe("Path_Robustness")
-        gc       = _safe("Local_Geary_C")
 
         # ── Colour helpers ────────────────────────────────────────────────
         def _gauge_color(val, lo=0.5, hi=0.8):
@@ -1655,26 +1189,9 @@ class SVRNValidator:
         plt.close(fig)
         print(f"✓ Model evaluation panel saved: {out_path}")
 
-    @staticmethod
-    def _local_geary_c(scores: np.ndarray, edge_index: np.ndarray) -> float:
-      
-        src, dst = edge_index
-        max_idx = len(scores) - 1
-        mask = (src <= max_idx) & (dst <= max_idx)
-        src, dst = src[mask], dst[mask]
-        if len(src) < 2:
-            return 1.0
-        n = len(scores)
-        mean_y = np.mean(scores)
-        denom = np.sum((scores - mean_y) ** 2)
-        if denom < 1e-12:
-            return 1.0
-        W_sum = float(len(src))   # W_ij = 1 for all edges
-        diff_sq = (scores[src] - scores[dst]) ** 2
-        return float(((n - 1) * np.sum(diff_sq)) / (2.0 * W_sum * denom + 1e-8))
-     
+   
 # =====================================================================
-# 10. Consensus Influence
+#  Consensus Influence
 # =====================================================================
 
 class ConsensusInfluence:
@@ -1845,10 +1362,3 @@ class ConsensusInfluence:
                   f" {row['selection_frequency']:>9.2f}  {bar}")
         print(f"{'─'*55}")
         return path
-
-
-
-
-# =====================================================================
-# 10b. Consensus Plotter
-# =====================================================================
