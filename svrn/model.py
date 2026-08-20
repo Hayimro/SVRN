@@ -8,9 +8,6 @@ variational relay that propagates communication signal over the
 spatial graph, edge-aware graph diffusion smoothing, and the top-level
 ``SVRN`` LightningModule that composes them into a trainable model.
 
-Split out of the original monolithic ``pipeline.py``; this module has
-no dependency on data loading, metrics, or plotting code, only on
-:class:`svrn.utils.Config` for typing/config access.
 """
 
 import warnings
@@ -49,8 +46,7 @@ class HillInteraction(nn.Module):
 
         spatial_dist = spatial_dist / (torch.median(spatial_dist) + 1e-8)
         spatial_dist = torch.clamp(spatial_dist, min=0.0, max=5.0)
-        
-        # MERFISH Optimization: Sharpen spatial decay to track localized single-cell boundaries
+  
         spatial_weight = torch.exp(-2.0 * torch.pow(spatial_dist, 2)).unsqueeze(1)
 
         return hill * spatial_weight
@@ -59,9 +55,8 @@ class HillInteraction(nn.Module):
         n = F.softplus(self.log_n) + 0.1
         return torch.mean((n - 1.0).pow(2)) + torch.mean(self.log_K.pow(2))
 
-
 # =====================================================================
-# 2. LR-Aware Gated Attention
+#  LR-Aware Gated Attention
 # =====================================================================
 class LRPAwareGatedAttention(nn.Module):
     def __init__(self, in_channels: int, n_lr: int, heads: int = 2,
@@ -139,7 +134,7 @@ class LRPAwareGatedAttention(nn.Module):
 
 
 # =====================================================================
-# 3. Stochastic Variational Relay
+#  Stochastic Variational Relay
 # =====================================================================
 class StochasticVariationalRelay(nn.Module):
     def __init__(self, steps: int = 3, latent_dim: int = 2):
@@ -227,7 +222,7 @@ class StochasticVariationalRelay(nn.Module):
         return h.to(original_dtype), variational_probs.to(original_dtype), kl_div
 
 # =====================================================================
-# 4. Graph Diffusion Smoother
+#  Graph Diffusion Smoother
 # =====================================================================
 class GraphDiffusionSmoother(nn.Module):
   
@@ -260,9 +255,8 @@ class GraphDiffusionSmoother(nn.Module):
             out = self.alpha * influence + (1 - self.alpha) * smoothed
         return out
 
-
 # =====================================================================
-# 5. SVRN Core Model
+#  SVRN Core Model
 # =====================================================================
 class SVRN(pl.LightningModule):
     def __init__(self, cfg: Config):
@@ -291,7 +285,6 @@ class SVRN(pl.LightningModule):
      
         self.diffusion = GraphDiffusionSmoother(n_steps=6, alpha=0.15, kernel_scale=0.40)
 
-        # Influence head now takes: z (HIDDEN_DIM) + relay scalar (1) — no ct_emb
         self.influence_head = nn.Sequential(
             nn.Linear(cfg.HIDDEN_DIM + 1, 128),
             nn.LayerNorm(128),
@@ -333,14 +326,11 @@ class SVRN(pl.LightningModule):
                 # Random subset — unbiased stochastic gradient estimator.
                 perm = torch.randperm(n_edges, device=src.device)[:max_e]
             else:
-                # Deterministic uniform stride — reproducible, covers the full
-                # graph without replacement bias.
                 step = max(1, n_edges // max_e)
                 perm = torch.arange(0, n_edges, step, device=src.device)[:max_e]
             src_u, dst_u = src[perm], dst[perm]
             edge_index_used = torch.stack([src_u, dst_u], dim=0)
         else:
-            # max_e == 0 or graph fits within budget: use every edge.
             src_u, dst_u, edge_index_used = src, dst, edge_index
 
         spatial_dist = torch.norm(
@@ -442,8 +432,6 @@ class SVRN(pl.LightningModule):
                 thresh_j = torch.median(col_raw[active_mask])
                 labels_raw_median_full[:, j] = ((col_raw >= thresh_j) & active_mask).float()
 
-
-
             if hasattr(batch, "cell_type_idx"):
                 with torch.no_grad():
                     n_types = int(batch.cell_type_idx.max().item()) + 1
@@ -462,7 +450,6 @@ class SVRN(pl.LightningModule):
             else:
                 edge_ifw_full = torch.ones(E, device=L.device)
 
-        # ── Loss accumulation loop ────────────────────────────────────────────────
         for i in range(0, E, chunk):
             sl = slice(i, min(i + chunk, E))
             probs_c = edge_probs_lr[sl]                    
@@ -664,6 +651,3 @@ class SVRN(pl.LightningModule):
                 "frequency": 1,
             },
         }
-# =====================================================================
-# 6. Data Preprocessor
-# =====================================================================
