@@ -7,8 +7,6 @@ transcriptomics object and ligand-receptor table, QC filtering,
 normalization, HVG selection, spatial KNN graph construction, and
 train/val/test and K-fold splitting (:class:`ScalableDataPreprocessor`).
 
-Split out of the original monolithic ``pipeline.py``; depends only on
-:class:`svrn.utils.Config` for configuration.
 """
 
 import os
@@ -85,24 +83,7 @@ class ScalableDataPreprocessor:
         return torch.tensor(self._dense(adata.X), dtype=torch.float32)
 
     def get_cell_type_prior(self, adata: AnnData, adj_matrix: csr_matrix):
-        """Compute a row-normalised cell-type transition matrix P[ct_i, ct_j].
-
-        Biological rationale
-        --------------------
-        Seminal spatial-CCC benchmarks (Cang & Nie 2020 Nat Methods; Armingol et al.
-        2021 Nat Rev Genet; Palla et al. 2022 Nat Methods) consistently show that
-        cell-type identity is the dominant structural constraint on which ligand-receptor
-        axes are active.  Using graph-weighted co-occurrence counts as the prior (rather
-        than a flat uniform prior) encodes the actual tissue microenvironment topology:
-        abundant sender->receiver pairs in the KNN graph receive higher prior weight,
-        biasing the BCE target toward biologically plausible interactions and away from
-        spurious co-expression artefacts (cf. CellChat normalisation, Jin et al. 2021).
-
-        Returns
-        -------
-        ct_prior   : torch.Tensor [n_types, n_types]  row-normalised transition probs
-        type_to_idx: dict  str cell-type -> int index
-        """
+        
         cell_type_col = self.detect_cell_type_column(adata)
         labels = adata.obs[cell_type_col].astype(str).values
         unique_types = sorted(set(labels))
@@ -244,12 +225,6 @@ class ScalableDataPreprocessor:
         n_cells = spatial_coords.shape[0]
         n_clusters = max(500, int(1 / min(val_ratio, test_ratio)))
         n_clusters = min(n_clusters, n_cells)
-
-        # Re-seed immediately before KMeans so the split is independent of
-        # whatever RNG state upstream operations (HVG, graph build, …) left
-        # behind.  This is necessary but not sufficient across library upgrades
-        # or filter-induced cell-count changes; saving indices is the hard
-        # guarantee (see spatial_train_val_test_split below).
         set_seed(self.cfg.SEED)
         kmeans = KMeans(n_clusters=n_clusters, random_state=self.cfg.SEED, n_init="auto")
         labels = kmeans.fit_predict(spatial_coords)
@@ -285,8 +260,6 @@ class ScalableDataPreprocessor:
         n_clusters = min(n_clusters, n_cells)
 
         # ── Step 1: spatial KMeans ────────────────────────────────────────
-        # Seed is mixed with a large prime so KMeans partitioning is fully
-        # independent of any upstream RNG state changes between runs.
         _kmeans_seed = int(self.cfg.SEED) ^ 0x6B43A9B5
         set_seed(_kmeans_seed)
         kmeans = KMeans(n_clusters=n_clusters, random_state=_kmeans_seed, n_init="auto")
@@ -323,11 +296,6 @@ class ScalableDataPreprocessor:
         print(f"  Regions: {list(unique_regions)}")
 
         # ── Step 3: stratified K-fold split of clusters ───────────────────
-        # BUG FIX 1: the outer StratifiedKFold must produce test ≈ TEST_RATIO,
-        # NOT test = 1/K_FOLDS.  When K_FOLDS=25 but TEST_RATIO=0.15, using
-        # n_splits=k gave test=1/25=4% instead of 15%.
-        # Fix: derive n_splits_test from TEST_RATIO so 1/n_splits_test ≈ TEST_RATIO,
-        # independent of K_FOLDS.
         _test_ratio = float(getattr(self.cfg, "TEST_RATIO", 0.15))
         _val_ratio  = float(getattr(self.cfg, "VAL_RATIO",  0.15))
         n_splits_test = max(2, round(1.0 / _test_ratio))  # e.g. 0.15 → 7 (14.3%)
@@ -341,11 +309,6 @@ class ScalableDataPreprocessor:
         all_outer_splits = list(skf.split(clusters, region_codes))
         # If k > n_splits_test, wrap around (each outer split is used at most twice)
         outer_splits = [all_outer_splits[i % n_splits_test] for i in range(k)]
-
-        # BUG FIX 2: val fraction was hardcoded to 10% of remaining.
-        # With TEST_RATIO=0.15, remaining=85%, so val should be
-        # VAL_RATIO / (1 - TEST_RATIO) = 0.15/0.85 ≈ 17.65% of remaining,
-        # NOT 10%.  The fix uses cfg.VAL_RATIO and cfg.TEST_RATIO directly.
         _val_of_remaining = _val_ratio / (1.0 - _test_ratio)   # ≈ 0.1765
 
         folds: List[Tuple[np.ndarray, np.ndarray, np.ndarray]] = []
@@ -356,8 +319,6 @@ class ScalableDataPreprocessor:
             n_val_clusters = max(1, int(round(len(remaining_clusters)
                                              * _val_of_remaining)))
 
-            # Use a second StratifiedKFold pass to pick val proportionally.
-            # n_val_folds = round(1 / _val_of_remaining) ≈ 6 for 17.65%
             n_val_folds = max(2, round(1.0 / _val_of_remaining))
             # Derive val-split seed independently per fold using Knuth hash
             _val_seed = int(self.cfg.SEED) ^ (0x517CC1B727220A95 * (fold_i + 1) & 0xFFFFFFFF)
@@ -405,31 +366,7 @@ class ScalableDataPreprocessor:
         k: int = 5,
         cell_types: Optional[np.ndarray] = None,
     ) -> List[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
-        """Return k (train_idx, val_idx, test_idx) folds, loading from disk if
-        a saved split exists; otherwise compute, save, and return fresh folds.
-
-        _compute_kfold_splits() is seeded (KMeans random_state + StratifiedKFold
-        random_state are all derived deterministically from cfg.SEED), but that
-        is NOT a hard reproducibility guarantee: KMeans' Lloyd-iteration distance
-        sums run through multi-threaded BLAS/OpenMP, whose floating-point
-        reduction order can vary between separate process runs even with an
-        identical random_state and identical input data. A handful of cells
-        sitting near a cluster boundary can flip to a neighboring cluster on
-        any given run, which then cascades through the StratifiedKFold step
-        into different train/val/test cell counts and membership per fold —
-        exactly the kind of small (tens-of-cells) fold-to-fold drift that
-        produces different downstream metrics and consensus/selection-frequency
-        results across otherwise-identical runs.
-
-        Saving and reloading indices (same pattern as spatial_train_val_test_split
-        above) is the only robust way to guarantee identical folds across runs,
-        independent of any underlying library's floating-point determinism.
-
-        Priority:
-          1. cfg.KFOLD_SPLIT_PATH (explicit override) — load & verify.
-          2. Default path <output_dir>/kfold_split_indices.npz — load if present.
-          3. Compute fresh folds via _compute_kfold_splits, save, and return.
-        """
+        
         n_cells = spatial_coords.shape[0]
 
         explicit_path = self.cfg.KFOLD_SPLIT_PATH.strip() if self.cfg.KFOLD_SPLIT_PATH else ""
@@ -473,12 +410,7 @@ class ScalableDataPreprocessor:
                 return folds
 
             except (KeyError, ValueError, EOFError, OSError, zipfile.BadZipFile) as exc:
-                # Broadened beyond (KeyError, ValueError): a truncated/corrupted
-                # .npz (interrupted write, disk-full, partial download/transfer)
-                # raises EOFError/OSError/zipfile.BadZipFile, not KeyError or
-                # ValueError — those were previously uncaught here and would
-                # crash the whole pipeline instead of falling through to the
-                # "recompute" path below.
+         
                 if explicit_path:
                     raise RuntimeError(
                         f"Failed to load k-fold split from --kfold_split_path="
@@ -507,18 +439,7 @@ class ScalableDataPreprocessor:
         val_ratio: float = 0.15,
         test_ratio: float = 0.15,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Return (train_idx, val_idx, test_idx), loading from disk if a saved
-        split exists; otherwise compute, save, and return a fresh split.
-
-        Priority:
-          1. cfg.SPLIT_PATH (explicit --split_path argument) — load & verify.
-          2. Default path <output_dir>/split_indices.npz — load if present.
-          3. Compute a new split, save to <output_dir>/split_indices.npz.
-
-        Saving and reloading indices is the only robust way to guarantee
-        identical splits across runs when upstream preprocessing (HVG
-        selection, graph construction) may shift the global RNG state.
-        """
+ 
         n_cells = spatial_coords.shape[0]
 
         # ── Determine which file to try ──────────────────────────────────
@@ -557,10 +478,7 @@ class ScalableDataPreprocessor:
                 return train_idx, val_idx, test_idx
 
             except (KeyError, ValueError, EOFError, OSError, zipfile.BadZipFile) as exc:
-                # See matching comment in get_kfold_splits: broadened beyond
-                # (KeyError, ValueError) to also catch corrupted/truncated
-                # .npz files instead of letting them crash the pipeline.
-                # If an explicit path was given and it fails, abort loudly.
+ 
                 if explicit_path:
                     raise RuntimeError(
                         f"Failed to load split from --split_path={explicit_path}: {exc}"
@@ -630,9 +548,7 @@ class ScalableDataPreprocessor:
         sc.pp.highly_variable_genes(
             self.adata, n_top_genes=n_hvgs, flavor="seurat_v3", check_values=False,
         )
-        # Force LR genes into HVG set — prevents lr_features from being all-zero
-        # (reuses the already-loaded/validated `lr_pairs` instead of re-reading
-        # LR_PATH from disk a second time — same data, one fewer I/O failure point)
+
         ligand_col, receptor_col = self.detect_lr_columns(lr_pairs)
         lr_genes = set(lr_pairs[ligand_col].dropna().tolist() +
                        lr_pairs[receptor_col].dropna().tolist())
@@ -702,8 +618,3 @@ class ScalableDataPreprocessor:
         data.cell_types = np.array(cell_type_labels)
 
         return data, full_data
-
-
-# =====================================================================
-# 7. Metrics
-# =====================================================================
