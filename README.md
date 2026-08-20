@@ -180,9 +180,6 @@ handful of borderline cells), always reuse the saved `split_indices.npz` /
 `kfold_split_indices.npz` (via `--split_path`/`--kfold_split_path`) rather
 than recomputing splits when exact cross-run reproducibility matters.
 
-MIT — see [`LICENSE`](LICENSE). Update the copyright holder name in
-`LICENSE`, `CITATION.cff`, and `pyproject.toml` before publishing.
-
 ## Contributing
 
 Issues and pull requests are welcome. Please run `black svrn`, `isort svrn`,
