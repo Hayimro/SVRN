@@ -8,9 +8,6 @@ loss curves, influence-score maps, uncertainty panels — via
 (selection-frequency maps, ranked communication corridors — via
 :class:`ConsensusPlotter`).
 
-Split out of the original monolithic ``pipeline.py``; this module is
-self-contained (numpy/pandas/scipy/matplotlib/seaborn/networkx only)
-and has no dependency on the model, data-loading, or utils modules.
 """
 
 import os
@@ -303,7 +300,6 @@ class SVRNVisualizer:
 
     # ------------------------------------------------------------------
     # NEW: Communication corridor visualisation
-    # (replaces the old plot_spatial_trajectories)
     # ------------------------------------------------------------------
     def _extract_corridors(
         self,
@@ -532,7 +528,7 @@ class SVRNVisualizer:
 
 
 # =====================================================================
-# 9. Validator
+# Validator
 # =====================================================================-e 
 
 
@@ -1015,14 +1011,6 @@ class ConsensusPlotter:
             else:
                 coop_colors.append("lightgrey")    # neutral
 
-        # Separate palette for the scatter plot below: its legend advertises
-        # "steelblue" for the neutral class (see legend_elems), so the dots
-        # must use that same color rather than "lightgrey" — otherwise every
-        # neutral point (often the majority of pairs) renders as a washed-out
-        # near-white dot that's indistinguishable from the page background
-        # and from the grey error-bar lines, while the legend swatch implies
-        # a much more visible blue. The bar chart above keeps "lightgrey"
-        # since ITS title literally says "Grey = neutral".
         scatter_colors = [
             "#4c8cbf" if c == "lightgrey" else c for c in coop_colors
         ]
@@ -1067,12 +1055,6 @@ class ConsensusPlotter:
         median_K = float(np.median(mean_K))
         median_n = float(np.median(mean_n))
 
-        # Scatter with per-pair error bars.
-        # Error bars and dots are drawn as two separate layers: with
-        # hundreds of overlapping pairs, dense semi-opaque error-bar fans
-        # otherwise dominate the figure and bury the (small) colored
-        # markers underneath them — drawing faint error bars first, then
-        # fully-opaque dots on top, keeps the cooperativity colors readable.
         ax_sc.errorbar(
             mean_K, mean_n,
             xerr=std_K, yerr=std_n,
@@ -1160,13 +1142,7 @@ class ConsensusPlotter:
             Line2D([0], [0], color="grey", lw=1, ls="--",
                    label=f"Median n = {median_n:.4f}"),
         ]
-        # Legend placed OUTSIDE the axes (to the right) rather than at any
-        # in-axes corner: the quadrant-count annotations intentionally
-        # occupy all four corners of the plot, so any "loc=...corner..."
-        # legend placement is guaranteed to collide with one of them
-        # (this is what produced the overlapping/garbled text in the
-        # bottom-right corner previously — the legend and the "High K,
-        # Low n" quadrant label were both targeting "lower right").
+   
         ax_sc.legend(handles=legend_elems, fontsize=14, loc="upper left",
                      bbox_to_anchor=(1.02, 1.0), borderaxespad=0.0,
                      framealpha=0.9)#8
@@ -2048,21 +2024,7 @@ class ConsensusPlotter:
         plt.close(fig)
         print(f"✓ Plot saved: {path}")
     def plot_consensus_kn_scatter(self) -> None:
-        """Consensus K–n scatter  (C8_hill_kn_summary data).
-
-        Reads C8_hill_kn_summary.csv produced by plot_hill_kn_affinity() and
-        draws a clean scatter plot matching the reference image:
-
-          • x-axis : K  (affinity constant, mean across folds)
-          • y-axis : n  (Hill coefficient, mean across folds)
-          • Each dot : one LR pair, coloured steel-blue (neutral) with
-                       tomato/cornflower-blue for pos/neg cooperativity
-          • Dashed grey crosshairs at median K and median n
-          • Quadrant count annotations in each corner
-          • No error bars (clean dot-only style like the reference)
-
-        Saved to C8_hill_kn_consensus_scatter.png in the output directory.
-        """
+       
         csv_path = os.path.join(self.output_dir, "C8_hill_kn_summary.csv")
         if not os.path.exists(csv_path):
             print("  ⚠ C8_hill_kn_summary.csv not found — "
@@ -2215,8 +2177,3 @@ class ConsensusPlotter:
         self.plot_ds_ci_top_cells(top_n=30, sel_freq_threshold=sel_freq_threshold)
         self.plot_ds_influence_vs_uncertainty(sel_freq_threshold)
         print(f"\n✓ All consensus + downstream plots saved in: {self.output_dir}")
-
-
-# =====================================================================
-# 10c. Pipeline
-# =====================================================================
