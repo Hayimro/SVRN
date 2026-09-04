@@ -69,6 +69,8 @@ svrn/
 │   ├── visualization.py     # publication-quality plotting
 │   │                        # (SVRNVisualizer, ConsensusPlotter)
 │   └── pipeline.py          # SVRNPipeline orchestrator, `main()` CLI,
+|── docs/
+│   ├── algorithms.md       # pseudocode: training + consensus inference
 │                            # and the example_usage() smoke test
 ├── tests/
 │   └── test_modules.py     # CPU-only unit tests for the core NN modules
@@ -88,6 +90,20 @@ All public names are re-exported from `svrn/__init__.py`, so existing code
 using `from svrn import Config, SVRNPipeline, ...` is unaffected by this
 module split.
 
+## Outputs
+
+Each run writes to `--output_dir` (or `Config.OUTPUT_DIR`):
+
+- `split_indices.npz` / `kfold_split_indices.npz` — cached, reusable train/val/test
+  and K-fold partitions (spatial-KMeans-stratified) for exact reproducibility
+  across separate process launches
+- model checkpoints and a CSV training log (via PyTorch Lightning)
+- per-cell influence scores with Monte-Carlo mean/std/95% CI
+- consensus influence tables (per-cell-type percentile rank + selection
+  frequency across all run × fold models) and ranked communication corridors
+- evaluation metrics (AUROC, Spearman ρ, F1, Moran's I, Geary's C,
+  balanced accuracy, influence entropy) and publication-style plots
+
 
 ## Testing
 
@@ -98,3 +114,14 @@ pytest tests/ -v --cov=svrn --cov-report=term-missing
 
 CI (`.github/workflows/ci.yml`) runs these tests plus the synthetic smoke
 test on every push/PR against CPU-only PyTorch.
+
+```bibtex
+@software{svrn2026,
+  title   = {SVRN: Stochastic Variational Relay Network for Cell-Cell
+             Communication Inference in Spatial Transcriptomics},
+  author  = {{Hayimro Edemealem Merie, Zenebe Markos Lonseko, Helen Haile Hayeso, Dingcan Hu, Nini ‎Rao‎}},
+  year    = {2026},
+  url     = {https://github.com/Hayimro/SVRN},
+  version = {1.0.0}
+}
+```
