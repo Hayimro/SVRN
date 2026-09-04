@@ -1,5 +1,6 @@
 
 [![CI](https://github.com/<org>/svrn/actions/workflows/ci.yml/badge.svg)](https://github.com/<org>/svrn/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.9–3.11](https://img.shields.io/badge/python-3.9%E2%80%933.11-blue)](pyproject.toml)
 
 
@@ -80,6 +81,7 @@ svrn/
 ├── requirements-dev.txt    # + testing/linting/notebook tools
 ├── environment.yml         # conda equivalent
 └── pyproject.toml          # packaging + console entry point
+└──LICENSE
 ```
 
 All public names are re-exported from `svrn/__init__.py`, so existing code
